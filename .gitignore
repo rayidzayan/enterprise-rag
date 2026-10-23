@@ -1,0 +1,10 @@
+﻿.venv/
+__pycache__/
+*.py[cod]
+.env
+.streamlit/secrets.toml
+data/documents/*
+!data/documents/.gitkeep
+graph_error.log
+inspect_graph.py
+inspect_both_graphs.py
