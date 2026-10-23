@@ -1,7 +1,8 @@
 ﻿import os
 import re
 
-import ollama
+import streamlit as st
+from groq import Groq
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from pgvector.psycopg import register_vector
@@ -189,13 +190,34 @@ def hybrid_search(question: str, top_k: int = 4) -> dict:
     }
 
 
+
 def generate_answer(question: str, evidence: list[dict]) -> str:
-    """Generate an answer using only the retrieved evidence."""
+    """Generate a grounded answer using the hosted Groq API."""
     if not evidence:
         return (
             "I could not find relevant evidence in the indexed documents. "
             "Try a more specific question or ingest additional documents."
         )
+
+    # Read the API key from local environment variables or Streamlit Secrets.
+    api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        try:
+            api_key = st.secrets.get("GROQ_API_KEY")
+        except Exception:
+            api_key = None
+
+    if not api_key:
+        return (
+            "Groq API key is not configured. Set GROQ_API_KEY in your "
+            "local .env file or in Streamlit Cloud Secrets."
+        )
+
+    model_name = os.getenv(
+        "GROQ_MODEL",
+        "openai/gpt-oss-20b",
+    )
 
     context = "\n\n".join(
         (
@@ -207,30 +229,42 @@ def generate_answer(question: str, evidence: list[dict]) -> str:
         for item in evidence
     )
 
-    prompt = f"""
-Answer the question using only the supplied evidence.
+    client = Groq(api_key=api_key)
 
-Rules:
-- Do not invent facts absent from the evidence.
-- If the evidence does not answer the question, say so clearly.
-- Cite supporting passages using [Source: filename, chunk N].
-- Distinguish explicit facts from reasonable inferences.
-
-EVIDENCE:
-{context}
-
-QUESTION:
-{question}
-"""
-
-    client = ollama.Client(host=OLLAMA_HOST)
-    response = client.chat(
-        model=OLLAMA_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        options={"temperature": 0},
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an enterprise document question-answering "
+                    "assistant. Answer using only the supplied evidence. "
+                    "Do not invent facts or rely on outside knowledge. "
+                    "If the evidence does not answer the question, say so. "
+                    "Cite supporting documents using their filename and "
+                    "chunk number, as shown in the evidence."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"QUESTION:\n{question}\n\n"
+                    f"RETRIEVED EVIDENCE:\n{context}\n\n"
+                    "Give a concise, accurate answer with source citations."
+                ),
+            },
+        ],
+        temperature=0,
+        max_completion_tokens=1024,
     )
 
-    return response.message.content.strip()
+    answer = response.choices[0].message.content
+
+    if not answer:
+        return "The hosted model returned an empty answer. Please try again."
+
+    return answer.strip()
+
 
 
 def ask(question: str, top_k: int = 4) -> dict:
